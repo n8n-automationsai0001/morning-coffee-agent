@@ -30,12 +30,11 @@ except ImportError:
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
-SCRIPT_DIR    = Path(__file__).parent
-SKILL_DIR     = SCRIPT_DIR.parent
-PROJECT_ROOT  = SKILL_DIR.parent
-HOLDINGS_FILE   = SKILL_DIR / 'holdings.json'
+SCRIPT_DIR    = Path(__file__).parent       # stock-portfolio/
+PROJECT_ROOT  = SCRIPT_DIR.parent           # repo root
+HOLDINGS_FILE   = SCRIPT_DIR / 'holdings.json'
 ENV_FILE        = PROJECT_ROOT / '.env'
-PSE_ID_CACHE_FILE = SKILL_DIR / 'pse_edge_ids.json'
+PSE_ID_CACHE_FILE = SCRIPT_DIR / 'pse_edge_ids.json'
 
 PSE_API          = "https://phisix-api3.appspot.com/stocks/{symbol}.json"
 PSE_EDGE_SEARCH  = "https://edge.pse.com.ph/autoComplete/searchCompanyNameSymbol.ax?term={symbol}"
