@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""
+Shared Google OAuth2 authentication for all Google Workspace skills.
+
+Usage in any skill script:
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent / '_shared'))
+    from google_auth import get_credentials
+
+    from googleapiclient.discovery import build
+    creds = get_credentials()
+    service = build('calendar', 'v3', credentials=creds)
+"""
+
+import os
+import sys
+from pathlib import Path
+
+# ── Load .env (walk up directory tree to find project root) ─────────────────
+def _load_env():
+    current = Path(__file__).resolve().parent
+    for _ in range(10):
+        env_path = current / '.env'
+        if env_path.exists():
+            with open(env_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#') and '=' in line:
+                        key, _, value = line.partition('=')
+                        os.environ.setdefault(key.strip(), value.strip())
+            return current
+        current = current.parent
+    return None
+
+_load_env()
+
+# ── Auto-install dependencies ─────────────────────────────────────────────────
+try:
+    from google.auth.transport.requests import Request
+    from google.oauth2.credentials import Credentials
+    from google_auth_oauthlib.flow import InstalledAppFlow
+except ImportError:
+    import subprocess
+    subprocess.check_call([
+        sys.executable, '-m', 'pip', 'install',
+        'google-auth', 'google-auth-oauthlib', 'google-api-python-client'
+    ])
+    from google.auth.transport.requests import Request
+    from google.oauth2.credentials import Credentials
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
+# ── Scopes — all Google Workspace services ────────────────────────────────────
+SCOPES = [
+    'https://www.googleapis.com/auth/calendar',
+    'https://www.googleapis.com/auth/gmail.modify',
+    'https://www.googleapis.com/auth/drive',
+    'https://www.googleapis.com/auth/documents',
+    'https://www.googleapis.com/auth/spreadsheets',
+    'https://www.googleapis.com/auth/presentations',
+    'https://www.googleapis.com/auth/forms.body',
+    'https://www.googleapis.com/auth/youtube.upload',
+    'https://www.googleapis.com/auth/youtube',
+]
+
+ACCOUNT = 'aiautomations0001@gmail.com'
+TOKEN_PATH = Path(__file__).parent / 'token.json'
+
+
+def get_credentials():
+    """Get or refresh Google OAuth2 credentials covering all Workspace services."""
+    creds = None
+
+    if TOKEN_PATH.exists():
+        creds = Credentials.from_authorized_user_file(str(TOKEN_PATH))
+
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            client_id = os.environ.get('GOOGLE_CLIENT_ID')
+            client_secret = os.environ.get('GOOGLE_CLIENT_SECRET')
+
+            if not client_id or not client_secret:
+                print("Error: GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be set in .env")
+                sys.exit(1)
+
+            client_config = {
+                "installed": {
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "redirect_uris": ["urn:ietf:wg:oauth:2.0:oob", "http://localhost"],
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token"
+                }
+            }
+
+            flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
+            print(f"\nOpening browser for Google Workspace authorization...")
+            print(f"Account: {ACCOUNT}")
+            print("Requesting access to: Calendar, Gmail, Drive, Docs, Sheets, Slides, Forms, YouTube\n")
+            creds = flow.run_local_server(port=8080)
+
+        TOKEN_PATH.write_text(creds.to_json())
+
+    return creds
