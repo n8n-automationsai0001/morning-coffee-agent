@@ -229,13 +229,41 @@ def send_telegram_text(message: str) -> bool:
     return False
 
 
-# ── Playwright screenshot ─────────────────────────────────────────────────────
+# ── Screenshot rendering ──────────────────────────────────────────────────────
 
 def render_briefing_screenshot(html: str) -> bytes:
+    """Render HTML to PNG. Tries Playwright first (reliable on CCR), falls
+    back to html2image (works on local machines with Chrome/Edge installed).
     """
-    Render HTML to PNG using html2image (headless Edge/Chrome — no compiler needed).
-    Writes to a temp file, reads it back, auto-crops the bottom gray margin.
-    """
+    png = _render_with_playwright(html)
+    if png is not None:
+        return png
+    return _render_with_html2image(html)
+
+
+def _render_with_playwright(html: str) -> bytes:
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return None
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True, args=['--no-sandbox'])
+            page = browser.new_page(viewport={'width': 648, 'height': 1200})
+            page.set_content(html, wait_until='load')
+            raw = page.screenshot(full_page=True, type='png')
+            browser.close()
+        print("  [Screenshot] Rendered (Playwright).")
+        return raw
+    except Exception as e:
+        print(f"  [Screenshot] Playwright failed: {e}")
+        traceback.print_exc()
+        return None
+
+
+def _render_with_html2image(html: str) -> bytes:
+    """Fallback path for local runs where Chrome/Edge is in PATH."""
     import tempfile
 
     try:
@@ -248,17 +276,14 @@ def render_briefing_screenshot(html: str) -> bytes:
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             hti = Html2Image(output_path=tmpdir)
-            # 648px wide = 600px card + 24px padding each side
-            # 1200px tall = safe ceiling; we crop the bottom gray margin after
             hti.screenshot(html_str=html, save_as='briefing.png', size=(648, 1200))
             raw = (Path(tmpdir) / 'briefing.png').read_bytes()
 
-        # Auto-crop: remove trailing rows of body background color (#f4f4f7)
         raw = _autocrop_bottom(raw)
-        print("  [Screenshot] Rendered.")
+        print("  [Screenshot] Rendered (html2image).")
         return raw
     except Exception as e:
-        print(f"  [Screenshot] Failed: {e}")
+        print(f"  [Screenshot] html2image failed: {e}")
         return None
 
 
