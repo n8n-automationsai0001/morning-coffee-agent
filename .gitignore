@@ -10,3 +10,7 @@ briefing.png
 .env
 shared/token.json
 shared/token.json.bak
+
+# Local auto-memory mirrors (Claude Code's per-project memory system)
+MEMORY.md
+memory/
