@@ -111,10 +111,18 @@ def load_holdings():
 def fetch_price(ticker: str):
     """Returns (price_php, day_change_pct) or (None, None) on failure.
 
-    Tries each phisix mirror in turn; individual appspot instances often
-    have partial outages, so the cascade gives us resilience against
-    per-instance failures.
+    Primary: phisix mirrors (live intraday). Falls back to PSE Edge's
+    chart data (last close + previous close) when every phisix mirror
+    fails — phisix is frequently flaky but PSE Edge is the official
+    PSE source and stays reliable from cloud IPs.
     """
+    price, pct = _fetch_price_phisix(ticker)
+    if price is not None:
+        return price, pct
+    return _fetch_price_pse_edge(ticker)
+
+
+def _fetch_price_phisix(ticker: str):
     last_err = None
     for url_template in PSE_API_ENDPOINTS:
         url = url_template.format(symbol=ticker)
@@ -128,8 +136,22 @@ def fetch_price(ticker: str):
         except Exception as e:
             last_err = e
             continue
-    print(f"  [Warning] Could not fetch {ticker} from any phisix mirror: {last_err}")
+    print(f"  [Warning] phisix unavailable for {ticker} ({last_err}); trying PSE Edge")
     return None, None
+
+
+def _fetch_price_pse_edge(ticker: str):
+    """Last close from PSE Edge chart data. Day % = (last - prev) / prev * 100.
+    Reuses the cached company/security IDs from _get_pse_edge_ids.
+    """
+    closes = fetch_pse_history(ticker)
+    if not closes or len(closes) < 2:
+        print(f"  [Warning] PSE Edge also unavailable for {ticker}")
+        return None, None
+    last = closes[-1]
+    prev = closes[-2]
+    pct = ((last - prev) / prev) * 100 if prev else 0.0
+    return last, pct
 
 
 # ── Fetch analyst data from Yahoo Finance ─────────────────────────────────────
@@ -186,12 +208,19 @@ def _get_pse_edge_ids(ticker: str):
         return None, None
 
 
+_pse_history_cache = {}  # ticker -> list[float] | None; avoids duplicate PSE Edge calls in one run
+
+
 def fetch_pse_history(ticker: str):
     """Returns a list of closing prices (float) for the last 2 years from PSE Edge.
-    Returns None on failure.
+    Returns None on failure. Per-process cache so price + forecast paths
+    don't double-fetch.
     """
+    if ticker in _pse_history_cache:
+        return _pse_history_cache[ticker]
     cmpy_id, security_id = _get_pse_edge_ids(ticker)
     if not cmpy_id or not security_id:
+        _pse_history_cache[ticker] = None
         return None
     try:
         end   = datetime.datetime.now().strftime('%m/%d/%Y')
@@ -210,9 +239,13 @@ def fetch_pse_history(ticker: str):
             data = json.loads(r.read())
         chart = data.get('chartData', [])
         if len(chart) < 60:
+            _pse_history_cache[ticker] = None
             return None
-        return [float(row['CLOSE']) for row in chart]
+        closes = [float(row['CLOSE']) for row in chart]
+        _pse_history_cache[ticker] = closes
+        return closes
     except Exception:
+        _pse_history_cache[ticker] = None
         return None
 
 
