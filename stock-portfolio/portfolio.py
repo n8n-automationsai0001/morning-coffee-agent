@@ -36,7 +36,13 @@ HOLDINGS_FILE   = SCRIPT_DIR / 'holdings.json'
 ENV_FILE        = PROJECT_ROOT / '.env'
 PSE_ID_CACHE_FILE = SCRIPT_DIR / 'pse_edge_ids.json'
 
-PSE_API          = "https://phisix-api3.appspot.com/stocks/{symbol}.json"
+PSE_API          = "https://phisix-api3.appspot.com/stocks/{symbol}.json"  # kept for back-compat
+PSE_API_ENDPOINTS = [
+    "https://phisix-api3.appspot.com/stocks/{symbol}.json",
+    "https://phisix-api4.appspot.com/stocks/{symbol}.json",
+    "https://phisix-api.appspot.com/stocks/{symbol}.json",
+    "https://phisix-api2.appspot.com/stocks/{symbol}.json",
+]
 PSE_EDGE_SEARCH  = "https://edge.pse.com.ph/autoComplete/searchCompanyNameSymbol.ax?term={symbol}"
 PSE_EDGE_CHART   = "https://edge.pse.com.ph/common/DisclosureCht.ax"
 PSE_EDGE_HEADERS = {
@@ -103,18 +109,27 @@ def load_holdings():
 # ── Fetch prices from phisix-api (PSE live/last-close prices in PHP) ──────────
 
 def fetch_price(ticker: str):
-    """Returns (price_php, day_change_pct) or (None, None) on failure."""
-    url = PSE_API.format(symbol=ticker)
-    try:
-        with urllib.request.urlopen(url, timeout=10) as resp:
-            data = json.loads(resp.read())
-        stock = data['stocks'][0]
-        price = float(stock['price']['amount'])
-        pct   = float(stock.get('percentChange', 0))
-        return price, pct
-    except Exception as e:
-        print(f"  [Warning] Could not fetch {ticker}: {e}")
-        return None, None
+    """Returns (price_php, day_change_pct) or (None, None) on failure.
+
+    Tries each phisix mirror in turn; individual appspot instances often
+    have partial outages, so the cascade gives us resilience against
+    per-instance failures.
+    """
+    last_err = None
+    for url_template in PSE_API_ENDPOINTS:
+        url = url_template.format(symbol=ticker)
+        try:
+            with urllib.request.urlopen(url, timeout=10) as resp:
+                data = json.loads(resp.read())
+            stock = data['stocks'][0]
+            price = float(stock['price']['amount'])
+            pct   = float(stock.get('percentChange', 0))
+            return price, pct
+        except Exception as e:
+            last_err = e
+            continue
+    print(f"  [Warning] Could not fetch {ticker} from any phisix mirror: {last_err}")
+    return None, None
 
 
 # ── Fetch analyst data from Yahoo Finance ─────────────────────────────────────
