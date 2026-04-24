@@ -8,10 +8,12 @@ import os
 import re
 import sys
 import json
+import time
 import uuid
 import base64
 import subprocess
 import datetime
+import traceback
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -106,6 +108,26 @@ def md_to_telegram_html(text: str) -> str:
     return ''.join(out)
 
 
+# ── Retry helper ──────────────────────────────────────────────────────────────
+
+def _retry(fn, label: str, attempts: int = 3):
+    """Call fn() up to `attempts` times with exponential backoff. Returns fn's result on success, None on total failure."""
+    delay = 1
+    last_err = None
+    for i in range(1, attempts + 1):
+        try:
+            return fn()
+        except Exception as e:
+            last_err = e
+            print(f"  [{label}] attempt {i}/{attempts} failed: {e}")
+            if i < attempts:
+                time.sleep(delay)
+                delay *= 2
+    print(f"  [{label}] giving up after {attempts} attempts.")
+    traceback.print_exception(type(last_err), last_err, last_err.__traceback__)
+    return None
+
+
 # ── Telegram helpers ──────────────────────────────────────────────────────────
 
 def get_telegram_chat_id(bot_token: str):
@@ -134,11 +156,11 @@ def _get_bot_and_chat():
     return bot_token, chat_id
 
 
-def send_telegram_photo(image_bytes: bytes, caption: str):
-    """Send a PNG image to Telegram via sendPhoto (multipart upload)."""
+def send_telegram_photo(image_bytes: bytes, caption: str) -> bool:
+    """Send a PNG image to Telegram via sendPhoto (multipart upload). Returns True on success."""
     bot_token, chat_id = _get_bot_and_chat()
     if not bot_token:
-        return
+        return False
 
     boundary = uuid.uuid4().hex.encode('ascii')
 
@@ -159,7 +181,7 @@ def send_telegram_photo(image_bytes: bytes, caption: str):
         b'--' + boundary + b'--\r\n'
     )
 
-    try:
+    def _send():
         req = urllib.request.Request(
             f"https://api.telegram.org/bot{bot_token}/sendPhoto",
             data=body,
@@ -167,28 +189,29 @@ def send_telegram_photo(image_bytes: bytes, caption: str):
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
             result = json.loads(resp.read())
-        if result.get('ok'):
-            print("  [Telegram] Briefing image sent.")
-        else:
-            print(f"  [Telegram] Error: {result.get('description')}")
-    except urllib.error.HTTPError as e:
-        print(f"  [Telegram] Failed: {e} — {e.read().decode('utf-8', errors='replace')}")
-    except Exception as e:
-        print(f"  [Telegram] Failed: {e}")
+        if not result.get('ok'):
+            raise RuntimeError(f"Telegram API error: {result.get('description')}")
+        return result
+
+    if _retry(_send, "Telegram") is not None:
+        print("  [Telegram] Briefing image sent.")
+        return True
+    return False
 
 
-def send_telegram_text(message: str):
-    """Fallback: send plain HTML text message."""
+def send_telegram_text(message: str) -> bool:
+    """Fallback: send plain HTML text message. Returns True on success."""
     bot_token, chat_id = _get_bot_and_chat()
     if not bot_token:
-        return
+        return False
     payload = json.dumps({
         "chat_id": chat_id,
         "text": message,
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
     }).encode()
-    try:
+
+    def _send():
         req = urllib.request.Request(
             f"https://api.telegram.org/bot{bot_token}/sendMessage",
             data=payload,
@@ -196,12 +219,14 @@ def send_telegram_text(message: str):
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
             result = json.loads(resp.read())
-        if result.get('ok'):
-            print("  [Telegram] Briefing text sent (fallback).")
-        else:
-            print(f"  [Telegram] Error: {result.get('description')}")
-    except Exception as e:
-        print(f"  [Telegram] Failed: {e}")
+        if not result.get('ok'):
+            raise RuntimeError(f"Telegram API error: {result.get('description')}")
+        return result
+
+    if _retry(_send, "Telegram") is not None:
+        print("  [Telegram] Briefing text sent (fallback).")
+        return True
+    return False
 
 
 # ── Playwright screenshot ─────────────────────────────────────────────────────
@@ -513,7 +538,8 @@ def build_telegram_text_fallback(calendar_text: str, portfolio_text: str) -> str
 
 # ── Send HTML email via Gmail ─────────────────────────────────────────────────
 
-def send_email_briefing(html_body: str, now: datetime.datetime):
+def send_email_briefing(html_body: str, now: datetime.datetime) -> bool:
+    """Send the HTML briefing via Gmail API. Returns True on success."""
     shared_dir = REPO_ROOT / 'shared'
     if str(shared_dir) not in sys.path:
         sys.path.insert(0, str(shared_dir))
@@ -522,7 +548,8 @@ def send_email_briefing(html_body: str, now: datetime.datetime):
         from google_auth import get_credentials
     except ImportError as e:
         print(f"  [Email] google_auth not available: {e}")
-        return
+        traceback.print_exc()
+        return False
 
     try:
         from googleapiclient.discovery import build as gbuild
@@ -534,31 +561,39 @@ def send_email_briefing(html_body: str, now: datetime.datetime):
     try:
         creds   = get_credentials()
         service = gbuild('gmail', 'v1', credentials=creds)
-        subject = f"Morning Coffee Briefing - {now.strftime('%b %d, %Y')}"
-
-        message_parts = [
-            f'From: {BRIEFING_EMAIL}',
-            f'To: {BRIEFING_EMAIL}',
-            f'Subject: {subject}',
-            'MIME-Version: 1.0',
-            'Content-Type: text/html; charset="UTF-8"',
-            '',
-            html_body,
-        ]
-        raw = base64.urlsafe_b64encode(
-            '\r\n'.join(message_parts).encode('utf-8')
-        ).decode().rstrip('=')
-
-        service.users().messages().send(userId='me', body={'raw': raw}).execute()
-        print(f"  [Email] Briefing sent to {BRIEFING_EMAIL}")
     except Exception as e:
-        print(f"  [Email] Failed: {e}")
+        print(f"  [Email] Auth failed: {e}")
+        traceback.print_exc()
+        return False
+
+    subject = f"Morning Coffee Briefing - {now.strftime('%b %d, %Y')}"
+    message_parts = [
+        f'From: {BRIEFING_EMAIL}',
+        f'To: {BRIEFING_EMAIL}',
+        f'Subject: {subject}',
+        'MIME-Version: 1.0',
+        'Content-Type: text/html; charset="UTF-8"',
+        '',
+        html_body,
+    ]
+    raw = base64.urlsafe_b64encode(
+        '\r\n'.join(message_parts).encode('utf-8')
+    ).decode().rstrip('=')
+
+    def _send():
+        return service.users().messages().send(userId='me', body={'raw': raw}).execute()
+
+    if _retry(_send, "Email") is not None:
+        print(f"  [Email] Briefing sent to {BRIEFING_EMAIL}")
+        return True
+    return False
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
     load_env()
+    failures = []
 
     print("Fetching today's calendar...")
     cal_raw  = run_silent(GCAL_SCRIPT, ['today'])
@@ -580,14 +615,26 @@ def main():
     print("Sending to Telegram...")
     if img_bytes:
         caption = f"Morning Coffee - {now.strftime('%b %d, %Y')}"
-        send_telegram_photo(img_bytes, caption)
+        telegram_ok = send_telegram_photo(img_bytes, caption)
     else:
         print("  Falling back to text...")
-        send_telegram_text(build_telegram_text_fallback(cal_text, port_text))
+        telegram_ok = send_telegram_text(build_telegram_text_fallback(cal_text, port_text))
+
+    if not telegram_ok:
+        failures.append("Telegram send failed")
 
     # Send HTML email
     print("\nSending email briefing...")
-    send_email_briefing(html, now)
+    if not send_email_briefing(html, now):
+        failures.append("Email send failed")
+
+    if failures:
+        print("\n=== RUN FAILED ===")
+        for f in failures:
+            print(f"  - {f}")
+        sys.exit(1)
+
+    print("\n=== RUN OK ===")
 
 
 if __name__ == '__main__':
