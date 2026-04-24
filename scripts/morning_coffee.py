@@ -231,14 +231,34 @@ def send_telegram_text(message: str) -> bool:
 
 # ── Screenshot rendering ──────────────────────────────────────────────────────
 
-def render_briefing_screenshot(html: str) -> bytes:
-    """Render HTML to PNG. Tries Playwright first (reliable on CCR), falls
-    back to html2image (works on local machines with Chrome/Edge installed).
+def render_briefing_screenshot(html: str, *,
+                               date_str: str = None,
+                               time_str: str = None,
+                               calendar_text: str = None,
+                               portfolio_text: str = None) -> bytes:
+    """Render the briefing to PNG bytes.
+
+    Tries three renderers in order:
+      1. Playwright (cleanest HTML render; works locally with Chrome installed)
+      2. html2image (fallback for local machines with Edge/Chrome in PATH)
+      3. Pillow direct drawing (always available; renders onto CCR without
+         needing a browser)
+
+    The Pillow path needs structured data, not HTML, so the caller passes
+    date_str/time_str/calendar_text/portfolio_text as kwargs. If they're
+    omitted, the PIL fallback is skipped.
     """
     png = _render_with_playwright(html)
     if png is not None:
         return png
-    return _render_with_html2image(html)
+    png = _render_with_html2image(html)
+    if png is not None:
+        return png
+    if date_str and time_str and calendar_text is not None and portfolio_text is not None:
+        png = _render_with_pil(date_str, time_str, calendar_text, portfolio_text)
+        if png is not None:
+            return png
+    return None
 
 
 def _render_with_playwright(html: str) -> bytes:
@@ -319,6 +339,279 @@ def _autocrop_bottom(png_bytes: bytes) -> bytes:
     buf = io.BytesIO()
     cropped.save(buf, format='PNG')
     return buf.getvalue()
+
+
+# ── PIL direct renderer (no browser needed; works anywhere Pillow does) ──────
+
+def _load_font(variant: str, size: int):
+    """Load a font with a cross-platform fallback chain.
+    variant: 'regular' | 'bold' | 'mono' | 'mono-bold'
+    """
+    from PIL import ImageFont
+
+    chains = {
+        'regular': [
+            'arial.ttf',
+            'Arial.ttf',
+            '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
+            '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+            'LiberationSans-Regular.ttf',
+            'DejaVuSans.ttf',
+        ],
+        'bold': [
+            'arialbd.ttf',
+            'Arial Bold.ttf',
+            '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
+            '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+            'LiberationSans-Bold.ttf',
+            'DejaVuSans-Bold.ttf',
+        ],
+        'mono': [
+            'consola.ttf',
+            'cour.ttf',
+            '/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf',
+            '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf',
+            'LiberationMono-Regular.ttf',
+            'DejaVuSansMono.ttf',
+        ],
+        'mono-bold': [
+            'consolab.ttf',
+            'courbd.ttf',
+            '/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf',
+            '/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf',
+            'LiberationMono-Bold.ttf',
+            'DejaVuSansMono-Bold.ttf',
+        ],
+    }
+    for candidate in chains.get(variant, chains['regular']):
+        try:
+            return ImageFont.truetype(candidate, size)
+        except (OSError, IOError):
+            continue
+    return ImageFont.load_default()
+
+
+def _render_with_pil(date_str: str, time_str: str,
+                     calendar_text: str, portfolio_text: str) -> bytes:
+    """Draw the briefing directly with Pillow. Matches the email visual design."""
+    try:
+        from PIL import Image, ImageDraw
+        import io as _io
+    except ImportError as e:
+        print(f"  [Screenshot] PIL unavailable: {e}")
+        return None
+
+    try:
+        cal_events = parse_calendar_for_email(calendar_text)
+        port_data = parse_portfolio_for_email(portfolio_text)
+
+        # Colors (RGB tuples matching the email's inline styles)
+        OUTER_BG   = (244, 244, 247)  # #f4f4f7
+        CARD_BG    = (255, 255, 255)  # #ffffff
+        HEADER_BG  = (26, 26, 46)     # #1a1a2e
+        INDIGO     = (79, 70, 229)    # #4f46e5
+        LAVENDER   = (165, 180, 252)  # #a5b4fc
+        EVENT_BG   = (248, 249, 255)  # #f8f9ff
+        DARK_TEXT  = (26, 26, 46)     # #1a1a2e
+        MID_GRAY   = (136, 136, 136)  # #888
+        LIGHT_GRAY = (170, 170, 170)  # #aaa
+        BORDER     = (229, 231, 235)  # #e5e7eb
+        SEP        = (240, 240, 240)  # #f0f0f0
+        GREEN      = (22, 163, 74)    # #16a34a
+        RED        = (220, 38, 38)    # #dc2626
+        WHITE      = (255, 255, 255)
+        FOOTER_BG  = (248, 249, 255)
+        SUM_TEXT   = (229, 231, 235)
+        EMPTY_GRAY = (102, 102, 102)  # #666
+
+        # Dimensions
+        WIDTH = 648
+        MARGIN = 24
+        CARD_X0 = MARGIN
+        CARD_X1 = WIDTH - MARGIN
+        CARD_WIDTH = CARD_X1 - CARD_X0
+        CARD_PAD = 32
+        CONTENT_X0 = CARD_X0 + CARD_PAD
+        CONTENT_X1 = CARD_X1 - CARD_PAD
+        CONTENT_WIDTH = CONTENT_X1 - CONTENT_X0
+
+        # Fonts
+        f_title         = _load_font('bold',    22)
+        f_subtitle      = _load_font('regular', 14)
+        f_section_label = _load_font('bold',    11)
+        f_date_header   = _load_font('bold',    12)
+        f_event_time    = _load_font('bold',    12)
+        f_event_title   = _load_font('bold',    14)
+        f_event_detail  = _load_font('regular', 12)
+        f_table_header  = _load_font('bold',    11)
+        f_table_cell    = _load_font('mono',    13)
+        f_summary       = _load_font('mono-bold', 13)
+        f_footer        = _load_font('regular', 11)
+        f_muted         = _load_font('regular', 11)
+
+        # Oversized canvas; we'll crop to actual content height at the end.
+        CANVAS_H = 3000
+        img = Image.new('RGB', (WIDTH, CANVAS_H), OUTER_BG)
+        draw = ImageDraw.Draw(img)
+
+        # White card background (tall; excess gets overwritten below card_bottom)
+        draw.rectangle([CARD_X0, MARGIN, CARD_X1, CANVAS_H - MARGIN], fill=CARD_BG)
+
+        y = MARGIN
+
+        # ── Header band ────────────────────────────────────────────────────
+        header_h = 100
+        draw.rectangle([CARD_X0, y, CARD_X1, y + header_h], fill=HEADER_BG)
+        draw.text((CONTENT_X0, y + 28),
+                  'Morning Coffee Briefing', fill=WHITE, font=f_title)
+        draw.text((CONTENT_X0, y + 28 + 22 + 6),
+                  f'{date_str}   |   {time_str}', fill=LAVENDER, font=f_subtitle)
+        y += header_h
+
+        # ── Calendar section ───────────────────────────────────────────────
+        y += 24  # top padding
+        draw.text((CONTENT_X0, y), 'CALENDAR - TODAY',
+                  fill=INDIGO, font=f_section_label)
+        y += 25  # label height + gap
+
+        if not cal_events:
+            draw.text((CONTENT_X0, y), 'No events today.',
+                      fill=EMPTY_GRAY, font=f_event_detail)
+            y += 24
+        else:
+            for item in cal_events:
+                if 'date_header' in item:
+                    y += 6
+                    draw.text((CONTENT_X0, y),
+                              item['date_header'].upper(),
+                              fill=DARK_TEXT, font=f_date_header)
+                    y += 22
+                else:
+                    has_detail = bool(item.get('detail'))
+                    card_h = 58 if has_detail else 40
+                    draw.rectangle([CONTENT_X0, y, CONTENT_X1, y + card_h],
+                                   fill=EVENT_BG)
+                    draw.rectangle([CONTENT_X0, y, CONTENT_X0 + 3, y + card_h],
+                                   fill=INDIGO)
+
+                    time_x = CONTENT_X0 + 14
+                    title_x = CONTENT_X0 + 14 + 130
+                    draw.text((time_x, y + 11),
+                              item['time'], fill=INDIGO, font=f_event_time)
+                    draw.text((title_x, y + 9),
+                              item['title'], fill=DARK_TEXT, font=f_event_title)
+                    if has_detail:
+                        if item.get('detail_type') == 'meet':
+                            detail_txt = 'Join Google Meet'
+                            detail_col = INDIGO
+                        else:
+                            detail_txt = item['detail']
+                            detail_col = MID_GRAY
+                        draw.text((title_x, y + 9 + 14 + 6),
+                                  detail_txt, fill=detail_col, font=f_event_detail)
+                    y += card_h + 8
+
+        y += 16  # bottom padding
+        draw.line([CONTENT_X0, y, CONTENT_X1, y], fill=SEP, width=1)
+        y += 1
+
+        # ── Portfolio section ──────────────────────────────────────────────
+        y += 24
+        draw.text((CONTENT_X0, y), 'PORTFOLIO - TODAY',
+                  fill=INDIGO, font=f_section_label)
+        y += 25
+
+        if port_data.get('title'):
+            draw.text((CONTENT_X0, y),
+                      port_data['title'], fill=MID_GRAY, font=f_muted)
+            y += 18
+
+        headers = port_data.get('headers', [])
+        rows = port_data.get('rows', [])
+
+        if headers and rows:
+            n_cols = len(headers)
+            # Column boundaries: first column left-aligned, rest right-aligned
+            col_w = CONTENT_WIDTH // n_cols
+            col_bounds = [CONTENT_X0 + i * col_w for i in range(n_cols + 1)]
+            col_bounds[-1] = CONTENT_X1
+
+            # Header row
+            header_row_h = 22
+            for i, h in enumerate(headers):
+                if i == 0:
+                    draw.text((col_bounds[i] + 4, y + 6),
+                              h, fill=MID_GRAY, font=f_table_header)
+                else:
+                    bbox = draw.textbbox((0, 0), h, font=f_table_header)
+                    w = bbox[2] - bbox[0]
+                    draw.text((col_bounds[i + 1] - w - 8, y + 6),
+                              h, fill=MID_GRAY, font=f_table_header)
+            y += header_row_h
+            draw.line([CONTENT_X0, y, CONTENT_X1, y], fill=BORDER, width=2)
+            y += 2
+
+            # Data rows
+            row_h = 26
+            for cols in rows:
+                for i, col in enumerate(cols):
+                    if i > 0 and col.startswith('+'):
+                        color = GREEN
+                    elif i > 0 and col.startswith('-'):
+                        color = RED
+                    else:
+                        color = DARK_TEXT
+                    if i == 0:
+                        draw.text((col_bounds[i] + 4, y + 5),
+                                  col, fill=color, font=f_table_cell)
+                    elif i < len(col_bounds) - 1:
+                        bbox = draw.textbbox((0, 0), col, font=f_table_cell)
+                        w = bbox[2] - bbox[0]
+                        draw.text((col_bounds[i + 1] - w - 8, y + 5),
+                                  col, fill=color, font=f_table_cell)
+                y += row_h
+                draw.line([CONTENT_X0, y, CONTENT_X1, y], fill=SEP, width=1)
+                y += 1
+
+        # Summary bar
+        if port_data.get('summary'):
+            y += 12
+            sum_h = 36
+            draw.rectangle([CONTENT_X0, y, CONTENT_X1, y + sum_h],
+                           fill=HEADER_BG)
+            draw.text((CONTENT_X0 + 14, y + 10),
+                      port_data['summary'], fill=SUM_TEXT, font=f_summary)
+            y += sum_h
+
+        y += 24  # bottom padding of portfolio section
+
+        # ── Footer ─────────────────────────────────────────────────────────
+        footer_h = 42
+        draw.rectangle([CARD_X0, y, CARD_X1, y + footer_h], fill=FOOTER_BG)
+        footer_text = f'Sent by Morning Coffee Agent  |  {BRIEFING_EMAIL}'
+        bbox = draw.textbbox((0, 0), footer_text, font=f_footer)
+        tw = bbox[2] - bbox[0]
+        draw.text((CARD_X0 + (CARD_WIDTH - tw) // 2, y + 14),
+                  footer_text, fill=LIGHT_GRAY, font=f_footer)
+        y += footer_h
+
+        card_bottom = y
+
+        # Wipe below the card so outer bg shows (we drew the white card too tall)
+        draw.rectangle([0, card_bottom, WIDTH, CANVAS_H], fill=OUTER_BG)
+
+        final_h = card_bottom + MARGIN
+        cropped = img.crop((0, 0, WIDTH, final_h))
+
+        buf = _io.BytesIO()
+        cropped.save(buf, format='PNG')
+        print("  [Screenshot] Rendered (PIL direct).")
+        return buf.getvalue()
+
+    except Exception as e:
+        print(f"  [Screenshot] PIL renderer failed: {e}")
+        traceback.print_exc()
+        return None
 
 
 # ── Parse calendar text ───────────────────────────────────────────────────────
@@ -643,7 +936,13 @@ def main():
 
     # Render screenshot and send to Telegram
     print("\nRendering screenshot for Telegram...")
-    img_bytes = render_briefing_screenshot(html)
+    img_bytes = render_briefing_screenshot(
+        html,
+        date_str=date_str,
+        time_str=time_str,
+        calendar_text=cal_text,
+        portfolio_text=port_text,
+    )
 
     print("Sending to Telegram...")
     if img_bytes:
