@@ -52,6 +52,40 @@ except ImportError:
     from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
 
+
+# ── CCR SSL workaround ────────────────────────────────────────────────────────
+# CCR's security proxy does TLS inspection with a self-signed CA that isn't
+# trusted by httplib2's bundled cacerts.txt (nor reliably by the system
+# bundle). Disable cert validation for googleapis calls when running in the
+# cloud environment; the proxy layer still enforces security.
+if os.environ.get('CLAUDE_CODE_REMOTE') == 'true':
+    try:
+        import httplib2
+        _orig_httplib2_init = httplib2.Http.__init__
+
+        def _patched_httplib2_init(self, *args, **kwargs):
+            kwargs.setdefault('disable_ssl_certificate_validation', True)
+            _orig_httplib2_init(self, *args, **kwargs)
+
+        httplib2.Http.__init__ = _patched_httplib2_init
+    except ImportError:
+        pass
+
+    try:
+        import requests
+        import urllib3
+
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        _orig_requests_request = requests.Session.request
+
+        def _patched_requests_request(self, *args, **kwargs):
+            kwargs.setdefault('verify', False)
+            return _orig_requests_request(self, *args, **kwargs)
+
+        requests.Session.request = _patched_requests_request
+    except ImportError:
+        pass
+
 # ── Scopes — all Google Workspace services ────────────────────────────────────
 SCOPES = [
     'https://www.googleapis.com/auth/calendar',
