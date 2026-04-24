@@ -6,4 +6,7 @@ venv/
 *.tmp
 briefing.png
 
-# NOTE: .env, token.json, pse_edge_ids.json are intentionally committed to this private repo
+# Secrets — injected as CCR environment variables, not committed
+.env
+shared/token.json
+shared/token.json.bak

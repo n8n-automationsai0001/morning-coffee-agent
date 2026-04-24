@@ -15,6 +15,8 @@ Usage in any skill script:
 
 import os
 import sys
+import base64
+import json
 from pathlib import Path
 
 # ── Load .env (walk up directory tree to find project root) ─────────────────
@@ -68,10 +70,19 @@ TOKEN_PATH = Path(__file__).parent / 'token.json'
 
 
 def get_credentials():
-    """Get or refresh Google OAuth2 credentials covering all Workspace services."""
+    """Get or refresh Google OAuth2 credentials covering all Workspace services.
+
+    Loads credentials in this order:
+      1. GOOGLE_TOKEN_JSON_B64 env var (base64-encoded token.json) — used on CCR cloud runs
+      2. TOKEN_PATH file — used on local runs
+    """
     creds = None
 
-    if TOKEN_PATH.exists():
+    token_b64 = os.environ.get('GOOGLE_TOKEN_JSON_B64')
+    if token_b64:
+        info = json.loads(base64.b64decode(token_b64).decode('utf-8'))
+        creds = Credentials.from_authorized_user_info(info, SCOPES)
+    elif TOKEN_PATH.exists():
         creds = Credentials.from_authorized_user_file(str(TOKEN_PATH))
 
     if not creds or not creds.valid:
@@ -101,6 +112,9 @@ def get_credentials():
             print("Requesting access to: Calendar, Gmail, Drive, Docs, Sheets, Slides, Forms, YouTube\n")
             creds = flow.run_local_server(port=8080)
 
-        TOKEN_PATH.write_text(creds.to_json())
+        # Persist only when running locally (CCR filesystem is ephemeral;
+        # refresh tokens rarely rotate so the env-var seed stays valid).
+        if not token_b64:
+            TOKEN_PATH.write_text(creds.to_json())
 
     return creds
