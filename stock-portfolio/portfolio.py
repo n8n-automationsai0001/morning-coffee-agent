@@ -212,41 +212,56 @@ _pse_history_cache = {}  # ticker -> list[float] | None; avoids duplicate PSE Ed
 
 
 def fetch_pse_history(ticker: str):
-    """Returns a list of closing prices (float) for the last 2 years from PSE Edge.
+    """Returns a list of closing prices (float) from PSE Edge.
     Returns None on failure. Per-process cache so price + forecast paths
-    don't double-fetch.
+    don't double-fetch. Retries on transient 5xx/timeout.
+
+    Threshold for "enough data" is decided by the caller:
+      - fetch_price path needs just 2 points (last + prev close)
+      - fetch_technical_forecasts path needs >= 60 for meaningful regression
     """
+    import time as _time
+
     if ticker in _pse_history_cache:
         return _pse_history_cache[ticker]
     cmpy_id, security_id = _get_pse_edge_ids(ticker)
     if not cmpy_id or not security_id:
         _pse_history_cache[ticker] = None
         return None
-    try:
-        end   = datetime.datetime.now().strftime('%m/%d/%Y')
-        start = (datetime.datetime.now() - datetime.timedelta(days=730)).strftime('%m/%d/%Y')
-        payload = json.dumps({
-            'cmpy_id': cmpy_id,
-            'security_id': security_id,
-            'startDate': start,
-            'endDate': end,
-        }).encode()
-        headers = {**PSE_EDGE_HEADERS,
-                   'Content-Type': 'application/json',
-                   'Referer': f'https://edge.pse.com.ph/companyPage/stockData.do?cmpy_id={cmpy_id}'}
-        req = urllib.request.Request(PSE_EDGE_CHART, data=payload, headers=headers)
-        with urllib.request.urlopen(req, timeout=15) as r:
-            data = json.loads(r.read())
-        chart = data.get('chartData', [])
-        if len(chart) < 60:
-            _pse_history_cache[ticker] = None
-            return None
-        closes = [float(row['CLOSE']) for row in chart]
-        _pse_history_cache[ticker] = closes
-        return closes
-    except Exception:
-        _pse_history_cache[ticker] = None
-        return None
+
+    end   = datetime.datetime.now().strftime('%m/%d/%Y')
+    start = (datetime.datetime.now() - datetime.timedelta(days=730)).strftime('%m/%d/%Y')
+    payload = json.dumps({
+        'cmpy_id': cmpy_id,
+        'security_id': security_id,
+        'startDate': start,
+        'endDate': end,
+    }).encode()
+    headers = {**PSE_EDGE_HEADERS,
+               'Content-Type': 'application/json',
+               'Referer': f'https://edge.pse.com.ph/companyPage/stockData.do?cmpy_id={cmpy_id}'}
+
+    delay = 1
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(PSE_EDGE_CHART, data=payload, headers=headers)
+            with urllib.request.urlopen(req, timeout=15) as r:
+                data = json.loads(r.read())
+            chart = data.get('chartData', [])
+            if not chart:
+                raise RuntimeError('empty chartData')
+            closes = [float(row['CLOSE']) for row in chart]
+            _pse_history_cache[ticker] = closes
+            return closes
+        except Exception as e:
+            if attempt < 2:
+                _time.sleep(delay)
+                delay *= 2
+            else:
+                print(f"  [PSE Edge] history fetch failed for {ticker} after 3 attempts: {e}")
+
+    _pse_history_cache[ticker] = None
+    return None
 
 
 # ── Fetch historical prices and compute technical forecasts ───────────────────
@@ -260,7 +275,8 @@ def fetch_technical_forecasts(ticker: str):
         return None, None, None, None, None, None
     try:
         closes_list = fetch_pse_history(ticker)
-        if not closes_list:
+        if not closes_list or len(closes_list) < 60:
+            # Regression + Fibonacci need enough history to be meaningful
             return None, None, None, None, None, None
 
         closes = np.array(closes_list, dtype=float)
