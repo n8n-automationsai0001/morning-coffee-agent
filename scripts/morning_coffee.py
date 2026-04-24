@@ -247,19 +247,27 @@ def _render_with_playwright(html: str) -> bytes:
     except ImportError:
         return None
 
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, args=['--no-sandbox'])
-            page = browser.new_page(viewport={'width': 648, 'height': 1200})
-            page.set_content(html, wait_until='load')
-            raw = page.screenshot(full_page=True, type='png')
-            browser.close()
-        print("  [Screenshot] Rendered (Playwright).")
-        return raw
-    except Exception as e:
-        print(f"  [Screenshot] Playwright failed: {e}")
-        traceback.print_exc()
-        return None
+    # Prefer chromium-headless-shell (smaller, no ffmpeg, CCR-friendly).
+    # Fall back to full chromium for local dev machines.
+    for launch_kwargs in (
+        {'channel': 'chromium-headless-shell', 'headless': True, 'args': ['--no-sandbox']},
+        {'headless': True, 'args': ['--no-sandbox']},
+    ):
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(**launch_kwargs)
+                page = browser.new_page(viewport={'width': 648, 'height': 1200})
+                page.set_content(html, wait_until='load')
+                raw = page.screenshot(full_page=True, type='png')
+                browser.close()
+            variant = launch_kwargs.get('channel', 'chromium')
+            print(f"  [Screenshot] Rendered (Playwright {variant}).")
+            return raw
+        except Exception as e:
+            print(f"  [Screenshot] Playwright {launch_kwargs.get('channel', 'chromium')} failed: {e}")
+            continue
+    traceback.print_exc()
+    return None
 
 
 def _render_with_html2image(html: str) -> bytes:
