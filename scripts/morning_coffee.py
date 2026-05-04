@@ -298,7 +298,11 @@ def _render_with_html2image(html: str) -> bytes:
         from html2image import Html2Image
     except ImportError:
         print("  [Screenshot] Installing html2image (one-time)...")
-        subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'html2image'])
+        try:
+            subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'html2image'])
+        except subprocess.CalledProcessError as e:
+            print(f"  [Screenshot] html2image install failed: {e}")
+            return None
         from html2image import Html2Image
 
     try:
