@@ -425,7 +425,7 @@ def _render_with_pil(date_str: str, time_str: str,
         EMPTY_GRAY = (102, 102, 102)  # #666
 
         # Dimensions
-        WIDTH = 648
+        WIDTH = 820
         MARGIN = 24
         CARD_X0 = MARGIN
         CARD_X1 = WIDTH - MARGIN

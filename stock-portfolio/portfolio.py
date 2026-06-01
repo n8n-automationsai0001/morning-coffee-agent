@@ -453,19 +453,22 @@ def build_telegram_table(holdings: list) -> str:
         reg_str = f"{reg_target:,.2f}" if reg_target else "N/A"
         fib_str = f"{fib_1618:,.2f}"  if fib_1618  else "N/A"
 
+        avg_str    = f"{avg_price:,.2f}"
+        shares_str = f"{shares:,}"
+
         # Buy/Sell: if REG target > avg_price → Buy, else Sell
         if reg_target is not None:
             signal_str = "Buy" if reg_target > avg_price else "Sell"
         else:
             signal_str = "N/A"
 
-        rows.append((ticker, now_str, day_str, pnl_str, reg_str, fib_str, signal_str))
+        rows.append((ticker, avg_str, shares_str, now_str, day_str, pnl_str, reg_str, fib_str, signal_str))
 
     # Fixed column widths
-    C = [6, 8, 7, 7, 9, 9, 5]  # STOCK, NOW, DAY, P&L%, REG, FIB1.618, SIG
+    C = [6, 8, 7, 8, 7, 7, 9, 9, 5]  # STOCK, AVG, SHARES, NOW, DAY, P&L%, REG, FIB1.618, SIG
     sep = "  ".join("-" * w for w in C)
     hdr = "  ".join(h.ljust(w) for h, w in zip(
-        ["STOCK", "NOW", "DAY", "P&L%", "REG", "FIB1.618", "SIG"], C))
+        ["STOCK", "AVG", "SHARES", "NOW", "DAY", "P&L%", "REG", "FIB1.618", "SIG"], C))
 
     table_lines = [
         f"PORTFOLIO — {today}",
@@ -473,8 +476,8 @@ def build_telegram_table(holdings: list) -> str:
         hdr,
         sep,
     ]
-    for ticker, now_str, day_str, pnl_str, reg_str, fib_str, signal_str in rows:
-        cols = [ticker, now_str, day_str, pnl_str, reg_str, fib_str, signal_str]
+    for ticker, avg_str, shares_str, now_str, day_str, pnl_str, reg_str, fib_str, signal_str in rows:
+        cols = [ticker, avg_str, shares_str, now_str, day_str, pnl_str, reg_str, fib_str, signal_str]
         table_lines.append("  ".join(v.ljust(w) for v, w in zip(cols, C)))
 
     table_lines.append(sep)
