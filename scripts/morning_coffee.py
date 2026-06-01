@@ -31,7 +31,8 @@ HOLDINGS_FILE = REPO_ROOT / 'stock-portfolio' / 'holdings.json'
 
 sys.path.insert(0, str(REPO_ROOT / 'stock-portfolio'))
 
-BRIEFING_EMAIL = 'aiautomations0001@gmail.com'
+BRIEFING_EMAIL = 'aiautomations0001@gmail.com'   # sending account (Gmail auth + footer)
+RECIPIENT_EMAIL = 'ryanlubon1208@gmail.com'      # where the briefing is delivered
 
 
 # ── Load .env ─────────────────────────────────────────────────────────────────
@@ -895,7 +896,7 @@ def send_email_briefing(html_body: str, now: datetime.datetime) -> bool:
     subject = f"Morning Coffee Briefing - {now.strftime('%b %d, %Y')}"
     message_parts = [
         f'From: {BRIEFING_EMAIL}',
-        f'To: {BRIEFING_EMAIL}',
+        f'To: {RECIPIENT_EMAIL}',
         f'Subject: {subject}',
         'MIME-Version: 1.0',
         'Content-Type: text/html; charset="UTF-8"',
@@ -910,7 +911,7 @@ def send_email_briefing(html_body: str, now: datetime.datetime) -> bool:
         return service.users().messages().send(userId='me', body={'raw': raw}).execute()
 
     if _retry(_send, "Email") is not None:
-        print(f"  [Email] Briefing sent to {BRIEFING_EMAIL}")
+        print(f"  [Email] Briefing sent to {RECIPIENT_EMAIL}")
         return True
     return False
 
