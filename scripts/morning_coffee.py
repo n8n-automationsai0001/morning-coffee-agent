@@ -28,6 +28,35 @@ ENV_FILE     = REPO_ROOT / '.env'
 
 GCAL_SCRIPT   = REPO_ROOT / 'calendar' / 'gcal.py'
 HOLDINGS_FILE = REPO_ROOT / 'stock-portfolio' / 'holdings.json'
+MARKET_HOLIDAYS_FILE = REPO_ROOT / 'stock-portfolio' / 'market_holidays.json'
+
+# Philippines has no daylight saving, so a fixed UTC+8 offset is always correct.
+MANILA_TZ = datetime.timezone(datetime.timedelta(hours=8))
+
+
+def manila_now():
+    """Current time in Manila, anchored to UTC so it's correct regardless of the
+    host container's local timezone (CCR runs in UTC)."""
+    return datetime.datetime.now(datetime.timezone.utc).astimezone(MANILA_TZ)
+
+
+def market_status(now=None):
+    """Return (is_open, reason). is_open is False on weekends and PSE holidays.
+    reason is a human-readable closure reason when closed, else None."""
+    now = now or manila_now()
+    holidays = {}
+    try:
+        data = json.loads(MARKET_HOLIDAYS_FILE.read_text(encoding='utf-8'))
+        holidays = data.get(str(now.year), {})
+    except Exception as e:
+        print(f"  [Market] Could not read holiday list ({e}); assuming open.")
+
+    name = holidays.get(now.strftime('%Y-%m-%d'))
+    if name:
+        return False, name
+    if now.weekday() >= 5:  # 5 = Saturday, 6 = Sunday
+        return False, f"weekend ({now.strftime('%A')})"
+    return True, None
 
 sys.path.insert(0, str(REPO_ROOT / 'stock-portfolio'))
 
@@ -922,6 +951,26 @@ def main():
     load_env()
     failures = []
 
+    # Skip the briefing when the PSE is closed (weekends + PH holidays) — a
+    # market briefing on a closed market is noise. On a closed day, send a
+    # single "market closed" note on the morning (10am) run only; the 2pm and
+    # 5pm runs stay silent so the note doesn't repeat 3x.
+    now_manila = manila_now()
+    is_open, reason = market_status(now_manila)
+    if not is_open:
+        print(f"Market closed today ({reason}). Skipping briefing.")
+        is_morning_run = now_manila.hour < 12
+        if is_morning_run:
+            send_telegram_text(
+                f"☕ <b>Morning Coffee</b>\nMarket closed today ({html_escape(reason)}). "
+                f"No briefing — PSE is not trading."
+            )
+            print("  Sent 'market closed' note (morning run).")
+        else:
+            print("  Afternoon/evening run — staying silent.")
+        print("\n=== RUN OK (skipped, market closed) ===")
+        return
+
     print("Fetching today's calendar...")
     cal_raw  = run_silent(GCAL_SCRIPT, ['today'])
     cal_text = clean_output(cal_raw)
@@ -930,7 +979,7 @@ def main():
     port_text = fetch_portfolio_table()
 
     # Build HTML once — shared between screenshot and email
-    now      = datetime.datetime.now()
+    now      = now_manila
     date_str = now.strftime('%A, %B %d, %Y')
     time_str = now.strftime('%I:%M %p PHT')
     html     = build_email_html(date_str, time_str, cal_text, port_text)
