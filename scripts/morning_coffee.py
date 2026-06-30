@@ -960,6 +960,20 @@ def main():
     print("\nSending email briefing...")
     if not send_email_briefing(html, now):
         failures.append("Email send failed")
+        # Email failures are otherwise silent (no inbox to notice the gap).
+        # Alert via Telegram, which uses separate auth and stays up when the
+        # Google token dies. Most likely cause: GOOGLE_TOKEN_JSON_B64 refresh
+        # token revoked -> re-auth and re-seed the CCR env var.
+        if telegram_ok:
+            alert = (
+                "⚠️ <b>Morning Coffee: email delivery failed</b>\n"
+                f"Briefing to {RECIPIENT_EMAIL} did not send "
+                f"({now.strftime('%b %d, %I:%M %p')} PHT).\n"
+                "Telegram still works, so this is likely the Google token "
+                "(<code>GOOGLE_TOKEN_JSON_B64</code>) being revoked. "
+                "Re-auth and re-seed the CCR env var."
+            )
+            send_telegram_text(alert)
 
     if failures:
         print("\n=== RUN FAILED ===")
