@@ -2,8 +2,8 @@
   "holdings": [
     { "ticker": "AREIT", "avg_price": 38.6587, "shares": 2000 },
     { "ticker": "CNVRG", "avg_price": 11.8182, "shares": 5000 },
-    { "ticker": "JFC",   "avg_price": 200.6442, "shares": 2200 },
-    { "ticker": "MBT",   "avg_price": 71.3066, "shares": 2190 },
+    { "ticker": "JFC",   "avg_price": 198.3611, "shares": 2300 },
+    { "ticker": "MBT",   "avg_price": 71.3114, "shares": 2280 },
     { "ticker": "PGOLD", "avg_price": 29.8397, "shares": 5100 },
     { "ticker": "RCR",   "avg_price": 5.8697, "shares": 18900 }
   ]
